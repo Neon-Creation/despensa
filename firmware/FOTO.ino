@@ -23,6 +23,7 @@ const int btnEntradaPin = 42; // Botão de Entrada (conectado ao GND)
 const int ledPin        = 2;  // LED indicador da placa
 const int buzzerPin = 21; // Defina o pino onde conectou o positivo (S) do buzzer ativo
 // --- DIRETÓRIO ONDE A FOTO FICARÁ ARMAZENADA NO NOTEBOOK ---
+// Ajuste este caminho se a pasta do projeto for movida.
 const char* CAMINHO_FOTO_NOTEBOOK = "/home/juliolacerda/jj/despensa/imagens/foto.jpg";
 
 unsigned long tempoUltimoClique = 0;
