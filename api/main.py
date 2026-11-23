@@ -8,9 +8,9 @@ from slowapi.util import get_remote_address
 
 from api.auth import verify_api_key
 from api.config import settings
-from api.schemas import UploadResponse, EstoqueResponse, ProdutoResponse
+from api.schemas import UploadResponse, EstoqueResponse, ProdutoResponse, ProdutoUpsert
 from api.services.database import health_check_db
-from api.services.estoque import get_estoque, get_produto
+from api.services.estoque import get_estoque, get_produto, salvar_produto
 from api.services.scanner import processar_upload
 
 app = FastAPI(title="Despensa API", version="1.0.0")
@@ -76,6 +76,17 @@ async def obter_produto(request: Request, codigo: str):
     if not produto:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Produto não encontrado")
     return produto
+
+
+@app.put("/produto/{codigo}", response_model=ProdutoResponse, dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def cadastrar_produto(request: Request, codigo: str, dados: ProdutoUpsert):
+    """Cadastra um EAN novo ou atualiza os dados de um produto já existente.
+
+    É o passo seguinte quando ``/upload`` responde ``acao: "erro"``: depois do
+    cadastro, um novo upload do mesmo EAN incrementa a quantidade normalmente.
+    """
+    return salvar_produto(codigo, dados)
 
 
 if __name__ == "__main__":

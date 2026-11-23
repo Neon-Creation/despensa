@@ -7,7 +7,10 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageEnhance, ImageOps
-from pyzbar.pyzbar import decode
+
+from zbar_compat import garantir_zbar
+
+decode = garantir_zbar()
 
 from config import carregar_env
 

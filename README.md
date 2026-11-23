@@ -12,9 +12,10 @@ scripts locais, que também podem identificar itens com fontes web e IA.
    pelo header `X-API-Key`. Se não conseguir, mantém o envio serial USB como
    alternativa.
 3. A API lê o código de barras em memória, sem salvar a foto. Se o EAN existir
-   no SQLite, soma 1 ao estoque; se não existir, informa que o cadastro deve
-   ser feito localmente.
-4. A API também oferece consultas do estoque e de um produto por EAN.
+   no SQLite, soma 1 ao estoque; se não existir, responde `acao: "erro"` com o
+   EAN lido para que o produto seja cadastrado via `PUT /produto/{codigo}`.
+4. Depois do cadastro, um novo upload do mesmo EAN incrementa a quantidade.
+   A API também oferece consultas do estoque e de um produto por EAN.
 
 ## Teste rápido da API
 
@@ -28,6 +29,9 @@ brew install zbar                 # macOS; no Debian/Ubuntu: sudo apt install li
 pip install -r requirements-dev.txt
 pytest -q
 ```
+
+Em macOS com Apple Silicon, o `zbar_compat.py` localiza automaticamente a
+`libzbar` instalada pelo Homebrew, que o `pyzbar` não encontra sozinho.
 
 Para subir a API localmente com Docker:
 
@@ -57,6 +61,19 @@ O Docker inicia com um banco vazio; nesse caso, um EAN lido será reconhecido,
 mas a resposta informará que o produto ainda não está cadastrado. O banco do
 Docker fica em um volume persistente chamado `despensa_data`.
 
+Para cadastrar esse produto e já permitir a contagem no próximo upload:
+
+```bash
+curl -X PUT http://localhost:8000/produto/7896051111030 \
+  -H "X-API-Key: SUA_CHAVE_LOCAL" \
+  -H "Content-Type: application/json" \
+  -d '{"nome":"Leite integral","marca":"Marca X","conteudo":"1 L"}'
+```
+
+O `PUT` é idempotente: em produto novo a quantidade começa em 1; em produto
+já existente os metadados são atualizados sem zerar a contagem, a menos que o
+campo opcional `quantidade` seja enviado.
+
 ## API
 
 | Método | Rota | Autenticação | Função |
@@ -65,6 +82,7 @@ Docker fica em um volume persistente chamado `despensa_data`.
 | `POST` | `/upload` | `X-API-Key` | Recebe uma imagem e tenta contar o produto |
 | `GET` | `/estoque` | `X-API-Key` | Lista os produtos e o total |
 | `GET` | `/produto/{codigo}` | `X-API-Key` | Consulta um produto pelo EAN |
+| `PUT` | `/produto/{codigo}` | `X-API-Key` | Cadastra ou atualiza um produto pelo EAN |
 
 O upload aceita imagens de até `MAX_UPLOAD_MB` (5 MB por padrão) e tem limite
 de 10 requisições por minuto por IP. As consultas de estoque têm limite de 30
@@ -79,6 +97,38 @@ Para uma URL `https://`, mantenha configurado o certificado CA correspondente.
 Compile e grave `firmware/esp32_cam.ino` com as bibliotecas da placa, incluindo
 ArduinoJson. A câmera envia a foto à API e sinaliza o resultado pelos bipes e
 pela saída serial.
+
+## Simulação da ESP32 (sem hardware)
+
+O script `simular_esp32.py` reproduz o caminho completo da câmera: captura a
+foto (lê o JPEG), monta o **mesmo** `multipart/form-data` do firmware, envia por
+HTTP com o header `X-API-Key` e interpreta a resposta com as regras de
+bipes/mensagens seriais da ESP32. Por padrão ele sobe uma API local em segundo
+plano usando uma cópia temporária do banco, sem alterar `despensa.db`:
+
+```bash
+python3 simular_esp32.py imagens/miojo.jpg
+```
+
+Para apontar para uma API já em execução (Docker, por exemplo):
+
+```bash
+python3 simular_esp32.py imagens/miojo.jpg \
+  --url http://localhost:8000/upload --chave SUA_CHAVE_LOCAL
+```
+
+Saída esperada para um produto já cadastrado: HTTP 200, `lido: true`,
+`acao: "contado"`, `quantidade` incrementada e a sequência "bip curto + longo".
+Para um produto novo, `--cadastrar` executa o fluxo completo (upload → `erro` →
+`PUT` → upload → `contado`):
+
+```bash
+python3 simular_esp32.py imagens/leite.jpg --cadastrar \
+  --nome "Leite integral" --marca "Marca X" --conteudo "1 L"
+```
+
+Os testes `tests/test_simulacao_esp32.py` e `tests/test_cadastro.py` cobrem o
+contrato HTTP e o fluxo upload → PUT → upload.
 
 ## Scripts locais
 
