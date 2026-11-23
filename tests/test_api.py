@@ -215,3 +215,25 @@ def test_estoque_rate_limit(client, api_key):
     for _ in range(5):
         resposta = client.get("/estoque", headers={"X-API-Key": api_key})
         assert resposta.status_code == 200
+
+
+# --- 5.8 Validação de formato do EAN ----------------------------------------
+EANS_INVALIDOS = ["1234567", "123456789012345", "789107901337a", "7891-0790-1337"]
+
+
+@pytest.mark.parametrize("codigo", EANS_INVALIDOS)
+def test_obter_produto_com_ean_invalido_retorna_400(client, api_key, codigo):
+    resposta = client.get(f"/produto/{codigo}", headers={"X-API-Key": api_key})
+    assert resposta.status_code == 400
+    assert "EAN" in resposta.json()["detail"]
+
+
+@pytest.mark.parametrize("codigo", EANS_INVALIDOS)
+def test_cadastrar_produto_com_ean_invalido_retorna_400(client, api_key, codigo):
+    resposta = client.put(
+        f"/produto/{codigo}",
+        headers={"X-API-Key": api_key},
+        json={"nome": "Produto teste"},
+    )
+    assert resposta.status_code == 400
+    assert "EAN" in resposta.json()["detail"]

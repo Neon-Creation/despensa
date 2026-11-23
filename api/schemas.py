@@ -1,8 +1,12 @@
 """Modelos Pydantic da API."""
 
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+# EAN-8, UPC-A/EAN-13 e EAN-14: de 8 a 14 dígitos numéricos.
+EAN_PATTERN = r"^[0-9]{8,14}$"
+EanCodigo = Annotated[str, Field(pattern=EAN_PATTERN)]
 
 
 class UploadResponse(BaseModel):
@@ -42,7 +46,7 @@ class ProdutoUpsert(BaseModel):
 class ProdutoResponse(BaseModel):
     """Dados de um produto no estoque."""
 
-    codigo: str
+    codigo: EanCodigo
     nome: str
     marca: Optional[str] = None
     conteudo: Optional[str] = None
@@ -50,7 +54,11 @@ class ProdutoResponse(BaseModel):
 
 
 class EstoqueResponse(BaseModel):
-    """Lista completa de produtos do estoque."""
+    """Lista completa de produtos do estoque.
+
+    ``total`` é a quantidade de produtos únicos (linhas distintas por EAN),
+    não a soma dos valores de ``quantidade``.
+    """
 
     produtos: List[ProdutoResponse]
-    total: int
+    total: int = Field(..., description="Número de produtos únicos cadastrados")

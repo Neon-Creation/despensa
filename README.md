@@ -83,10 +83,36 @@ campo opcional `quantidade` seja enviado.
 | `GET` | `/estoque` | `X-API-Key` | Lista os produtos e o total |
 | `GET` | `/produto/{codigo}` | `X-API-Key` | Consulta um produto pelo EAN |
 | `PUT` | `/produto/{codigo}` | `X-API-Key` | Cadastra ou atualiza um produto pelo EAN |
+| `GET` | `/events/estoque` | `X-API-Key` | SSE: eventos de atualização de quantidade |
 
 O upload aceita imagens de até `MAX_UPLOAD_MB` (5 MB por padrão) e tem limite
 de 10 requisições por minuto por IP. As consultas de estoque têm limite de 30
 por minuto. O healthcheck não requer chave.
+
+### Formato do EAN e o campo `total`
+
+O EAN nas rotas `/produto/{codigo}` deve ter de 8 a 14 dígitos numéricos
+(`^[0-9]{8,14}$`, cobrindo EAN-8, UPC-A/EAN-13 e EAN-14). Um código fora desse
+formato recebe `400` em `GET` e `PUT`; a resposta e o corpo de cadastro não
+mudaram — o EAN continua sendo apenas o parâmetro da URL.
+
+`GET /estoque` devolve `total` como o número de produtos únicos cadastrados
+(uma linha por EAN), **não** a soma das quantidades.
+
+**Dados legados:** não há limpeza automática nem alteração do banco. Registros
+já existentes com EAN fora do padrão são omitidos de `GET /estoque` (para não
+quebrar a validação da resposta) e não podem ser consultados ou atualizados
+pela API até serem corrigidos manualmente. Para localizá-los:
+
+```sql
+SELECT codigo, nome FROM produtos
+WHERE codigo IS NULL
+   OR length(codigo) NOT BETWEEN 8 AND 14
+   OR codigo GLOB '*[^0-9]*';
+```
+
+A correção é uma decisão operacional do proprietário dos dados; a API apenas
+deixa de expor esses registros até que tenham um EAN válido.
 
 ## Configuração da ESP32-CAM
 
@@ -97,6 +123,28 @@ Para uma URL `https://`, mantenha configurado o certificado CA correspondente.
 Compile e grave `firmware/esp32_cam.ino` com as bibliotecas da placa, incluindo
 ArduinoJson. A câmera envia a foto à API e sinaliza o resultado pelos bipes e
 pela saída serial.
+
+## Atualizações em tempo real (SSE)
+
+`GET /events/estoque` mantém uma conexão SSE aberta e envia um evento sempre
+que a quantidade de um produto muda (upload da ESP32 ou cadastro via `PUT`):
+
+```
+event: estoque-update
+data: {"codigo": "7891079013373", "quantidade": 5, "acao": "incrementado"}
+```
+
+O campo `acao` é `incrementado` para uploads e `atualizado` para `PUT`. Cada
+cliente pode manter **uma** conexão SSE por vez; uma segunda conexão recebe
+`429`. A vaga é liberada ao desconectar. O envio de keep-alive usa ping de 15 s.
+
+```bash
+curl -N -H "X-API-Key: $DASHBOARD_KEY" http://localhost:8000/events/estoque
+```
+
+O consumo no dashboard (React Query + fallback para polling) é uma tarefa
+separada. Nos testes, `tests/test_sse.py` sobe um servidor real porque o
+`TestClient` do Starlette não suporta respostas SSE de duração indefinida.
 
 ## Simulação da ESP32 (sem hardware)
 

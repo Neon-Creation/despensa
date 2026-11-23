@@ -16,12 +16,17 @@ BANCO_ORIGINAL = RAIZ / "despensa.db"
 BANCO_TESTE = Path(tempfile.gettempdir()) / "despensa_api_teste.db"
 
 os.environ.setdefault("API_KEY", "chave-teste-123")
+os.environ.setdefault("API_KEY_ESP32", "chave-teste-123")
+os.environ.setdefault("API_KEY_DASHBOARD", "chave-teste-123")
 os.environ["DATABASE_PATH"] = str(BANCO_TESTE)
 
 from api.config import settings  # noqa: E402
 
 # Força o banco isolado mesmo que o .env defina DATABASE_PATH.
 settings.DATABASE_PATH = str(BANCO_TESTE)
+# Força chaves de teste para autenticação (sobrescreve valores do .env)
+settings.API_KEY_ESP32 = "chave-teste-123"
+settings.API_KEY_DASHBOARD = "chave-teste-123"
 
 from api.main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
