@@ -117,6 +117,7 @@ def test_produto_existente(client):
     assert dados["codigo"] == codigo
     assert dados["produto"] == linha[0]
     assert dados["acao"] == "contado"
+    assert isinstance(dados["quantidade"], int) and dados["quantidade"] > 0
 
 
 def test_produto_novo(client, monkeypatch):
@@ -130,6 +131,7 @@ def test_produto_novo(client, monkeypatch):
     assert dados["codigo"] == "7899999999999"
     assert dados["produto"] is None
     assert dados["acao"] == "erro"
+    assert dados["quantidade"] == 0
     assert "não cadastrado" in dados["mensagem"]
 
 
@@ -142,6 +144,7 @@ def test_sem_codigo_de_barras(client, monkeypatch):
         "codigo": None,
         "produto": None,
         "acao": None,
+        "quantidade": None,
         "mensagem": "Nenhum código de barras encontrado",
     }
 

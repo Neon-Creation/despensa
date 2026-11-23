@@ -5,7 +5,10 @@ import time
 
 import serial
 from PIL import Image, ImageEnhance, ImageOps
-from pyzbar.pyzbar import decode
+
+from zbar_compat import garantir_zbar
+
+decode = garantir_zbar()
 
 from comum import registrar_ou_contar
 

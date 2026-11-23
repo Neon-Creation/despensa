@@ -57,7 +57,8 @@ def registrar_ou_contar_retorna(codigo: str) -> dict:
     """Conta um produto existente; para produto novo, retorna erro sem cadastrar.
 
     A API não tem terminal interativo para pedir nome/marca, então produtos
-    novos devem ser cadastrados pelos scripts CLI locais.
+    novos devem ser cadastrados via ``PUT /produto/{codigo}`` (ou pelos scripts
+    CLI locais).
     """
     with get_db() as conn:
         cursor = conn.cursor()
@@ -85,7 +86,73 @@ def registrar_ou_contar_retorna(codigo: str) -> dict:
             "acao": "erro",
             "produto": None,
             "quantidade": 0,
-            "mensagem": "Produto não cadastrado. Use CLI local para cadastrar.",
+            "mensagem": "Produto não cadastrado. Cadastre via PUT /produto/{codigo}.",
+        }
+
+
+def upsert_produto(
+    codigo: str,
+    nome: str,
+    marca: Optional[str] = None,
+    conteudo: Optional[str] = None,
+    foto_url: Optional[str] = None,
+    quantidade: Optional[int] = None,
+) -> Optional[dict]:
+    """Cadastra um produto novo ou atualiza os dados de um já existente.
+
+    Em produto novo, ``quantidade`` começa em 1 (ou no valor informado). Em
+    produto existente, os metadados são atualizados e a quantidade só muda se
+    ``quantidade`` for enviado — assim corrigir o cadastro não zera a contagem.
+    """
+    codigo = codigo.strip()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM produtos WHERE codigo = ?", (codigo,))
+        existe = cursor.fetchone() is not None
+
+        if existe:
+            cursor.execute(
+                """
+                UPDATE produtos
+                SET nome = ?, marca = ?, conteudo = ?, foto_url = ?,
+                    quantidade = COALESCE(?, quantidade)
+                WHERE codigo = ?
+                """,
+                (nome, marca, conteudo, foto_url, quantidade, codigo),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO produtos (codigo, nome, marca, conteudo, foto_url, quantidade)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    codigo,
+                    nome,
+                    marca,
+                    conteudo,
+                    foto_url,
+                    1 if quantidade is None else quantidade,
+                ),
+            )
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT codigo, nome, marca, conteudo, quantidade
+            FROM produtos WHERE codigo = ?
+            """,
+            (codigo,),
+        )
+        linha = cursor.fetchone()
+        if not linha:
+            return None
+        return {
+            "codigo": linha[0],
+            "nome": linha[1],
+            "marca": linha[2],
+            "conteudo": linha[3],
+            "quantidade": linha[4],
         }
 
 
