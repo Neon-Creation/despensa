@@ -1,0 +1,4 @@
+# Dependências apenas para executar os testes locais (Fase 5)
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27

@@ -17,6 +17,45 @@ BANCO = Path(__file__).parent / "despensa.db"
 PASTA_IMAGENS = Path(__file__).parent / "imagens"
 
 
+def ler_codigo_rapido_em_memoria(imagem: Image.Image) -> dict:
+    """Decodifica EANs de uma imagem PIL já carregada em memória.
+
+    Adaptada de ``recebe_foto.py:ler_codigo_rapido``: recebe um ``PIL.Image``
+    (já com EXIF transpose aplicado pelo chamador) em vez de um caminho e nunca
+    grava em disco. Retorna ``{codigo: tipo}`` com o primeiro código encontrado
+    ou ``{}`` se nenhum for detectado.
+    """
+    cinza = ImageOps.grayscale(imagem)
+    contraste = ImageEnhance.Contrast(cinza).enhance(2)
+    versoes = [cinza, contraste, imagem]
+
+    # Ângulos retos apenas, para garantir velocidade em tempo real.
+    angulos_rapidos = [0, 90, -90, 180]
+
+    for angulo in angulos_rapidos:
+        for versao in versoes:
+            cor_fundo = (255, 255, 255) if versao.mode == "RGB" else 255
+            if angulo != 0:
+                rotacionada = versao.rotate(
+                    angulo,
+                    expand=True,
+                    fillcolor=cor_fundo,
+                )
+            else:
+                rotacionada = versao
+
+            codigos = decode(rotacionada)
+            encontrados = {
+                codigo.data.decode("utf-8", errors="replace"): codigo.type
+                for codigo in codigos
+            }
+
+            if encontrados:
+                return encontrados
+
+    return {}
+
+
 def conectar_banco():
     """Abre o SQLite e garante o schema, incluindo a coluna foto_url."""
     conexao = sqlite3.connect(BANCO)

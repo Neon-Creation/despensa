@@ -1,4 +1,9 @@
 #include "esp_camera.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include "secrets.h"
 
 // --- PINOS INTERNOS DA CÂMERA (Freenove ESP32-S3-CAM) ---
 #define PWDN_GPIO_NUM  -1
@@ -25,6 +30,11 @@ const int buzzerPin = 21; // Defina o pino onde conectou o positivo (S) do buzze
 // --- DIRETÓRIO ONDE A FOTO FICARÁ ARMAZENADA NO NOTEBOOK ---
 // Ajuste este caminho se a pasta do projeto for movida.
 const char* CAMINHO_FOTO_NOTEBOOK = "/home/juliolacerda/jj/despensa/imagens/foto.jpg";
+
+// --- TIMEOUTS / RETRY ---
+const unsigned long WIFI_TIMEOUT_MS = 10000;
+const unsigned long HTTP_TIMEOUT_MS = 30000;
+const int WIFI_MAX_RETRY = 3;
 
 unsigned long tempoUltimoClique = 0;
 bool travaLeitura = false; // Variável global para travar a câmera
@@ -71,6 +81,161 @@ void configurarCamera3MP() {
   }
 }
 
+// --- BUZZER ---
+void bip(unsigned long duracaoMs) {
+  digitalWrite(buzzerPin, HIGH);
+  delay(duracaoMs);
+  digitalWrite(buzzerPin, LOW);
+}
+
+void bipCurto()   { bip(50); }
+void bipMedio()   { bip(150); }
+void bipLongo()   { bip(400); }
+void bipErroRede(){ bip(800); }
+
+// --- WIFI ---
+bool conectarWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  for (int tentativa = 1; tentativa <= WIFI_MAX_RETRY; tentativa++) {
+    Serial.printf("WiFi: conectando (tentativa %d/%d)...\n", tentativa, WIFI_MAX_RETRY);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+    unsigned long inicio = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      if (millis() - inicio > WIFI_TIMEOUT_MS) break;
+      delay(500);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("WiFi conectado: ");
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+  }
+
+  Serial.println("WiFi: falha ao conectar.");
+  WiFi.disconnect(true);
+  return false;
+}
+
+// --- ENVIO HTTP(S) MULTIPART ---
+bool enviarFotoHTTP(camera_fb_t* fb, String& respostaJson) {
+  if (!conectarWiFi()) return false;
+
+  const bool https = strncmp(API_URL, "https://", 8) == 0;
+  const char* boundary = "ESP32CAMBoundary";
+
+  WiFiClientSecure clienteSeguro;
+  WiFiClient clienteSimples;
+  HTTPClient http;
+
+  if (https) {
+    if (strlen(CA_CERT_ROOT) == 0) {
+      Serial.println("ERRO: API_URL https exige CA_CERT_ROOT no secrets.h.");
+      WiFi.disconnect(true);
+      return false;
+    }
+    clienteSeguro.setCACert(CA_CERT_ROOT);
+    if (!http.begin(clienteSeguro, API_URL)) {
+      Serial.println("ERRO: http.begin falhou.");
+      WiFi.disconnect(true);
+      return false;
+    }
+  } else {
+    if (!http.begin(clienteSimples, API_URL)) {
+      Serial.println("ERRO: http.begin falhou.");
+      WiFi.disconnect(true);
+      return false;
+    }
+  }
+
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("Content-Type", String("multipart/form-data; boundary=") + boundary);
+
+  String head = String("--") + boundary + "\r\n";
+  head += "Content-Disposition: form-data; name=\"file\"; filename=\"foto.jpg\"\r\n";
+  head += "Content-Type: image/jpeg\r\n\r\n";
+  const String tail = String("\r\n--") + boundary + "--\r\n";
+
+  const size_t total = head.length() + fb->len + tail.length();
+  uint8_t* corpo = (uint8_t*)malloc(total);
+  if (!corpo) {
+    Serial.println("ERRO: sem memoria para montar o multipart.");
+    http.end();
+    WiFi.disconnect(true);
+    return false;
+  }
+
+  size_t offset = 0;
+  memcpy(corpo + offset, head.c_str(), head.length());
+  offset += head.length();
+  memcpy(corpo + offset, fb->buf, fb->len);
+  offset += fb->len;
+  memcpy(corpo + offset, tail.c_str(), tail.length());
+
+  Serial.printf("HTTP: enviando %u bytes...\n", (unsigned)total);
+  int httpCode = http.POST(corpo, total);
+
+  bool ok = false;
+  if (httpCode > 0) {
+    respostaJson = http.getString();
+    ok = (httpCode == 200);
+    Serial.printf("HTTP POST -> %d\n", httpCode);
+    if (!ok) Serial.println(respostaJson);
+  } else {
+    Serial.printf("HTTP POST falhou: %s\n", http.errorToString(httpCode).c_str());
+  }
+
+  free(corpo);
+  http.end();
+  WiFi.disconnect(true);
+  return ok;
+}
+
+// --- PROCESSAMENTO DA RESPOSTA JSON ---
+void processarRespostaHTTP(const String& respostaJson) {
+  JsonDocument doc;
+  DeserializationError erro = deserializeJson(doc, respostaJson);
+
+  if (erro) {
+    Serial.printf("JSON invalido: %s\n", erro.c_str());
+    bipErroRede();
+    return;
+  }
+
+  bool lido = doc["lido"] | false;
+  const char* acao = doc["acao"] | "";
+  const char* mensagem = doc["mensagem"] | "";
+
+  if (lido) {
+    travaLeitura = true;  // Evita recapturar enquanto o botão continua pressionado
+    Serial.println("LIDO");
+
+    if (strcmp(acao, "contado") == 0) {
+      bipCurto();
+      bipLongo();
+      Serial.println("CADASTRADO");
+    } else if (strcmp(acao, "erro") == 0) {
+      // Produto novo nao cadastrado: 3 bipes curtos
+      for (int i = 0; i < 3; i++) {
+        bipCurto();
+        delay(80);
+      }
+      if (strlen(mensagem) > 0) Serial.println(mensagem);
+    }
+  } else {
+    // Foto recebida, mas nenhum codigo encontrado: 2 bipes medios
+    for (int i = 0; i < 2; i++) {
+      bipMedio();
+      delay(150);
+    }
+    if (strlen(mensagem) > 0) Serial.println(mensagem);
+  }
+}
+
 void tirarFoto() {
   digitalWrite(ledPin, HIGH);
 
@@ -85,12 +250,25 @@ void tirarFoto() {
     return;
   }
 
+  // ===== TENTA HTTP PRIMEIRO =====
+  String respostaJson;
+  if (enviarFotoHTTP(fb, respostaJson)) {
+    processarRespostaHTTP(respostaJson);
+    esp_camera_fb_return(fb);
+    digitalWrite(ledPin, LOW);
+    return;
+  }
+
+  // ===== FALLBACK: SERIAL USB =====
+  bipErroRede();
+  Serial.println("HTTP indisponivel, usando serial USB...");
+
   // Envia o cabeçalho com o diretório de destino e o tamanho da foto via cabo USB
   Serial.printf("\nINICIO_FOTO|%s|%u\n", CAMINHO_FOTO_NOTEBOOK, fb->len);
-  
+
   // Transfere os bytes da imagem JPG diretamente pela porta USB
   Serial.write(fb->buf, fb->len);
-  
+
   Serial.println("\nFIM_FOTO");
 
   esp_camera_fb_return(fb);
