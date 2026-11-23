@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Código da API
 COPY api/ ./api/
-COPY comum.py config.py ./
+COPY comum.py config.py zbar_compat.py ./
 
 # Variável para volume persistente
 ENV DATABASE_PATH=/data/despensa.db

@@ -1,23 +1,27 @@
 """Camada de serviço para consultas de estoque."""
 
+import re
 from typing import Optional
 
+from api.schemas import EAN_PATTERN, EstoqueResponse, ProdutoResponse, ProdutoUpsert
 from api.services.database import (
-    listar_todos_produtos,
     buscar_produto_por_codigo,
-    upsert_produto as upsert_produto_db,
+    listar_todos_produtos,
 )
+from api.services.database import upsert_produto as upsert_produto_db
 from api.services.events import eventos
-from api.schemas import ProdutoResponse, EstoqueResponse, ProdutoUpsert
 
 
 def get_estoque() -> EstoqueResponse:
-    """Retorna todos os produtos do estoque com contagem total."""
-    produtos = listar_todos_produtos()
-    return EstoqueResponse(
-        produtos=[ProdutoResponse(**p) for p in produtos],
-        total=len(produtos)
-    )
+    """Retorna produtos com EAN válido; ``total`` conta produtos, não quantidades."""
+    produtos = []
+    for linha in listar_todos_produtos():
+        if re.fullmatch(EAN_PATTERN, str(linha["codigo"])) is None:
+            # Registros legados fora do padrão não são apagados do banco;
+            # a correção é manual e está documentada no README.
+            continue
+        produtos.append(ProdutoResponse(**linha))
+    return EstoqueResponse(produtos=produtos, total=len(produtos))
 
 
 def get_produto(codigo: str) -> Optional[ProdutoResponse]:
@@ -28,6 +32,9 @@ def get_produto(codigo: str) -> Optional[ProdutoResponse]:
 
 def salvar_produto(codigo: str, dados: ProdutoUpsert) -> ProdutoResponse:
     """Cadastra ou atualiza um produto e devolve o registro resultante."""
+    if re.fullmatch(EAN_PATTERN, codigo) is None:
+        raise ValueError(f"Código EAN inválido: {codigo!r}")
+
     produto = upsert_produto_db(
         codigo,
         dados.nome,

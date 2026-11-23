@@ -65,7 +65,12 @@ def test_put_cadastra_e_upload_passa_a_contar(client, monkeypatch):
 
 def test_put_atualiza_metadados_sem_zerar_quantidade(client):
     with sqlite3.connect(settings.DATABASE_PATH) as conn:
-        codigo = conn.execute("SELECT codigo FROM produtos LIMIT 1").fetchone()[0]
+        # Registros legados com EAN inválido não podem ser enviados ao PUT.
+        codigo = conn.execute(
+            "SELECT codigo FROM produtos "
+            "WHERE length(codigo) BETWEEN 8 AND 14 AND codigo NOT GLOB '*[^0-9]*' "
+            "LIMIT 1"
+        ).fetchone()[0]
         conn.execute("UPDATE produtos SET quantidade = 7 WHERE codigo = ?", (codigo,))
         conn.commit()
 

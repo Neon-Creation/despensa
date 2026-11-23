@@ -33,5 +33,7 @@ def processar_upload(conteudo_bytes: bytes) -> dict:
             quantidade=resultado["quantidade"],
             acao="incrementado",
         )
+    elif resultado.get("acao") == "erro":
+        eventos.notificar_produto_nao_cadastrado(codigo)
 
     return {"lido": True, "codigo": codigo, **resultado}

@@ -89,12 +89,45 @@ class BarramentoEventos:
             # Loop encerrado (shutdown): não há mais ninguém para notificar.
             pass
 
+    def notificar_produto_nao_cadastrado(self, codigo: str) -> None:
+        """Publica evento SSE 'produto-nao-cadastrado' a partir de código síncrono."""
+        if not self._inscritos:
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+
+        evento = {"event": "produto-nao-cadastrado", "data": json.dumps({"codigo": codigo}, ensure_ascii=False)}
+
+        def agendar() -> None:
+            asyncio.create_task(self._publicar_bruto(evento))
+
+        try:
+            loop.call_soon_threadsafe(agendar)
+        except RuntimeError:
+            pass
+
+    async def _publicar_bruto(self, evento: dict) -> None:
+        """Publica evento já formatado para SSE (com campos 'event' e 'data')."""
+        for fila in tuple(self._inscritos):
+            try:
+                fila.put_nowait(evento)
+            except asyncio.QueueFull:
+                try:
+                    fila.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    fila.put_nowait(evento)
+                except asyncio.QueueFull:
+                    pass
+
 
 eventos = BarramentoEventos()
 
 
 async def gerador_estoque(cliente: str) -> AsyncIterator[dict]:
-    """Emite um ``estoque-update`` para cada mudança recebida na fila."""
+    """Emite eventos SSE: ``estoque-update`` e ``produto-nao-cadastrado``."""
     fila = eventos.inscrever()
     try:
         while True:
@@ -103,10 +136,14 @@ async def gerador_estoque(cliente: str) -> AsyncIterator[dict]:
             except asyncio.TimeoutError:
                 # O EventSourceResponse já envia o comentário de keep-alive.
                 continue
-            yield {
-                "event": "estoque-update",
-                "data": json.dumps(evento, ensure_ascii=False),
-            }
+            # Eventos de _publicar_bruto já têm 'event' e 'data'; estoque-update é formatado aqui.
+            if "event" in evento and "data" in evento:
+                yield evento
+            else:
+                yield {
+                    "event": "estoque-update",
+                    "data": json.dumps(evento, ensure_ascii=False),
+                }
     finally:
         eventos.dessinscrever(fila)
         eventos.remover_conexao(cliente)

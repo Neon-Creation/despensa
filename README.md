@@ -89,6 +89,31 @@ O upload aceita imagens de até `MAX_UPLOAD_MB` (5 MB por padrão) e tem limite
 de 10 requisições por minuto por IP. As consultas de estoque têm limite de 30
 por minuto. O healthcheck não requer chave.
 
+### Formato do EAN e o campo `total`
+
+O EAN nas rotas `/produto/{codigo}` deve ter de 8 a 14 dígitos numéricos
+(`^[0-9]{8,14}$`, cobrindo EAN-8, UPC-A/EAN-13 e EAN-14). Um código fora desse
+formato recebe `400` em `GET` e `PUT`; a resposta e o corpo de cadastro não
+mudaram — o EAN continua sendo apenas o parâmetro da URL.
+
+`GET /estoque` devolve `total` como o número de produtos únicos cadastrados
+(uma linha por EAN), **não** a soma das quantidades.
+
+**Dados legados:** não há limpeza automática nem alteração do banco. Registros
+já existentes com EAN fora do padrão são omitidos de `GET /estoque` (para não
+quebrar a validação da resposta) e não podem ser consultados ou atualizados
+pela API até serem corrigidos manualmente. Para localizá-los:
+
+```sql
+SELECT codigo, nome FROM produtos
+WHERE codigo IS NULL
+   OR length(codigo) NOT BETWEEN 8 AND 14
+   OR codigo GLOB '*[^0-9]*';
+```
+
+A correção é uma decisão operacional do proprietário dos dados; a API apenas
+deixa de expor esses registros até que tenham um EAN válido.
+
 ## Configuração da ESP32-CAM
 
 Copie `firmware/secrets.h.example` para `firmware/secrets.h` e configure SSID,
