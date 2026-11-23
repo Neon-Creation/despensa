@@ -11,6 +11,7 @@ from api.config import settings
 from api.schemas import UploadResponse, EstoqueResponse, ProdutoResponse, ProdutoUpsert
 from api.services.database import health_check_db
 from api.services.estoque import get_estoque, get_produto, salvar_produto
+from api.services.events import eventos, resposta_estoque
 from api.services.scanner import processar_upload
 
 app = FastAPI(title="Despensa API", version="1.0.0")
@@ -87,6 +88,29 @@ async def cadastrar_produto(request: Request, codigo: str, dados: ProdutoUpsert)
     cadastro, um novo upload do mesmo EAN incrementa a quantidade normalmente.
     """
     return salvar_produto(codigo, dados)
+
+
+@app.get("/events/estoque", dependencies=[Depends(verify_api_key)])
+async def stream_estoque(request: Request):
+    """SSE: envia ``estoque-update`` quando a quantidade de um produto muda.
+
+    Limite de 1 conexão simultânea por cliente (por IP): uma nova conexão
+    enquanto a anterior estiver aberta recebe 429. A vaga é liberada quando o
+    cliente desconecta.
+    """
+    cliente = get_remote_address(request)
+    if not eventos.pode_conectar(cliente):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Já existe uma conexão SSE aberta para este cliente",
+        )
+
+    eventos.registrar_conexao(cliente)
+    try:
+        return resposta_estoque(cliente)
+    except Exception:
+        eventos.remover_conexao(cliente)
+        raise
 
 
 if __name__ == "__main__":

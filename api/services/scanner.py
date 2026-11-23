@@ -5,6 +5,7 @@ import io
 from PIL import Image, ImageOps
 
 from api.services.database import registrar_ou_contar_retorna
+from api.services.events import eventos
 from comum import ler_codigo_rapido_em_memoria
 
 
@@ -25,4 +26,12 @@ def processar_upload(conteudo_bytes: bytes) -> dict:
 
     codigo = next(iter(codigos))
     resultado = registrar_ou_contar_retorna(codigo)
+
+    if resultado.get("acao") == "contado":
+        eventos.notificar(
+            codigo=codigo,
+            quantidade=resultado["quantidade"],
+            acao="incrementado",
+        )
+
     return {"lido": True, "codigo": codigo, **resultado}

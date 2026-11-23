@@ -7,6 +7,7 @@ from api.services.database import (
     buscar_produto_por_codigo,
     upsert_produto as upsert_produto_db,
 )
+from api.services.events import eventos
 from api.schemas import ProdutoResponse, EstoqueResponse, ProdutoUpsert
 
 
@@ -37,4 +38,11 @@ def salvar_produto(codigo: str, dados: ProdutoUpsert) -> ProdutoResponse:
     )
     if not produto:
         raise ValueError(f"Falha ao salvar o produto {codigo}")
-    return ProdutoResponse(**produto)
+
+    salvo = ProdutoResponse(**produto)
+    eventos.notificar(
+        codigo=salvo.codigo,
+        quantidade=salvo.quantidade,
+        acao="atualizado",
+    )
+    return salvo
