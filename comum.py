@@ -6,7 +6,7 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from zbar_compat import garantir_zbar
 
@@ -20,39 +20,60 @@ BANCO = Path(__file__).parent / "despensa.db"
 PASTA_IMAGENS = Path(__file__).parent / "imagens"
 
 
+def _decodificar_variante(imagem: Image.Image) -> dict:
+    """Tenta o zbar numa única variante da imagem, retornando ``{ean: tipo}``."""
+    try:
+        codigos = decode(imagem)
+    except Exception:
+        return {}
+    return {
+        codigo.data.decode("utf-8", errors="replace"): codigo.type
+        for codigo in codigos
+    }
+
+
 def ler_codigo_rapido_em_memoria(imagem: Image.Image) -> dict:
     """Decodifica EANs de uma imagem PIL já carregada em memória.
 
-    Adaptada de ``recebe_foto.py:ler_codigo_rapido``: recebe um ``PIL.Image``
-    (já com EXIF transpose aplicado pelo chamador) em vez de um caminho e nunca
-    grava em disco. Retorna ``{codigo: tipo}`` com o primeiro código encontrado
-    ou ``{}`` se nenhum for detectado.
+    Pipeline reforçada (a mesma do ``servidor_scanner.py``): cinza,
+    autocontraste, nitidez, recorte central ampliado e binarização. O recorte
+    vem primeiro porque é onde o código costuma estar quando o usuário aponta
+    a câmera. Só depois tenta-se o quadro inteiro e as rotações.
+
+    Nunca grava em disco. Retorna ``{codigo: tipo}`` com o primeiro código
+    encontrado ou ``{}`` se nenhum for detectado.
     """
     cinza = ImageOps.grayscale(imagem)
-    contraste = ImageEnhance.Contrast(cinza).enhance(2)
-    versoes = [cinza, contraste, imagem]
+    nitida = ImageOps.autocontrast(cinza, cutoff=2)
+    nitida = nitida.filter(ImageFilter.UnsharpMask(radius=2, percent=250, threshold=2))
 
-    # Ângulos retos apenas, para garantir velocidade em tempo real.
-    angulos_rapidos = [0, 90, -90, 180]
+    variantes = [cinza, nitida]
 
-    for angulo in angulos_rapidos:
-        for versao in versoes:
-            cor_fundo = (255, 255, 255) if versao.mode == "RGB" else 255
-            if angulo != 0:
-                rotacionada = versao.rotate(
-                    angulo,
-                    expand=True,
-                    fillcolor=cor_fundo,
-                )
-            else:
-                rotacionada = versao
+    largura, altura = nitida.size
+    caixa = (
+        int(largura * 0.12),
+        int(altura * 0.15),
+        int(largura * 0.88),
+        int(altura * 0.85),
+    )
+    recorte = nitida.crop(caixa)
+    if recorte.width > 0 and recorte.height > 0:
+        zoom = recorte.resize(
+            (recorte.width * 2, recorte.height * 2), Image.Resampling.BILINEAR
+        )
+        zoom = zoom.filter(ImageFilter.SHARPEN)
+        variantes.append(zoom)
+        variantes.append(zoom.point(lambda p: 255 if p > 115 else 0))
 
-            codigos = decode(rotacionada)
-            encontrados = {
-                codigo.data.decode("utf-8", errors="replace"): codigo.type
-                for codigo in codigos
-            }
+    for variante in variantes:
+        encontrados = _decodificar_variante(variante)
+        if encontrados:
+            return encontrados
 
+    for angulo in (90, -90, 180):
+        for variante in variantes[:3]:
+            rotacionada = variante.rotate(angulo, expand=True, fillcolor=255)
+            encontrados = _decodificar_variante(rotacionada)
             if encontrados:
                 return encontrados
 

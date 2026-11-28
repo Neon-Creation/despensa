@@ -29,15 +29,16 @@ const int ledPin        = 2;  // LED indicador da placa
 const int buzzerPin = 21; // Defina o pino onde conectou o positivo (S) do buzzer ativo
 // --- DIRETÓRIO ONDE A FOTO FICARÁ ARMAZENADA NO NOTEBOOK ---
 // Ajuste este caminho se a pasta do projeto for movida.
-const char* CAMINHO_FOTO_NOTEBOOK = "/home/juliolacerda/jj/despensa/imagens/foto.jpg";
+const char* CAMINHO_FOTO_NOTEBOOK = "C:/Users/Admin/Documents/github-projects/Projeto Xaxa/despensa/imagens/foto.jpg";
 
 // --- TIMEOUTS / RETRY ---
 const unsigned long WIFI_TIMEOUT_MS = 10000;
 const unsigned long HTTP_TIMEOUT_MS = 30000;
 const int WIFI_MAX_RETRY = 3;
 
-unsigned long tempoUltimoClique = 0;
-bool travaLeitura = false; // Variável global para travar a câmera
+const unsigned long DEBOUNCE_MS = 1500; // Intervalo mínimo entre sessões de captura
+unsigned long ultimoClique = 0;
+bool botaoPressionado = false; // Detecta borda de descida (botão ativo em LOW)
 void configurarCamera3MP() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -62,8 +63,8 @@ void configurarCamera3MP() {
   // Qualidade máxima da câmera 3MP (HDF3M-811 xR)
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size   = FRAMESIZE_VGA;    // 2048x1536 (3MP)
-  config.jpeg_quality = 60;                 // Qualidade máxima (menor número = menor compressão)
+  config.frame_size   = FRAMESIZE_VGA;    // 640x480: suficiente para EAN e rápido pela USB
+  config.jpeg_quality = 12;                 // Equilíbrio entre nitidez das barras e tamanho do JPEG
   config.fb_location  = CAMERA_FB_IN_PSRAM;
   config.grab_mode    = CAMERA_GRAB_LATEST;
   config.fb_count     = 2;
@@ -76,7 +77,7 @@ void configurarCamera3MP() {
 
   sensor_t * s = esp_camera_sensor_get();
   if (s) {
-    s->set_quality(s, 4);
+    s->set_quality(s, 12);
     s->set_sharpness(s, 2);
   }
 }
@@ -100,6 +101,8 @@ bool conectarWiFi() {
   for (int tentativa = 1; tentativa <= WIFI_MAX_RETRY; tentativa++) {
     Serial.printf("WiFi: conectando (tentativa %d/%d)...\n", tentativa, WIFI_MAX_RETRY);
     WiFi.mode(WIFI_STA);
+    // Reduz o pico de corrente do rádio (evita brownout com a câmera ligada).
+    WiFi.setTxPower(WIFI_POWER_11dBm);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
     unsigned long inicio = millis();
@@ -211,7 +214,6 @@ void processarRespostaHTTP(const String& respostaJson) {
   const char* mensagem = doc["mensagem"] | "";
 
   if (lido) {
-    travaLeitura = true;  // Evita recapturar enquanto o botão continua pressionado
     Serial.println("LIDO");
 
     if (strcmp(acao, "contado") == 0) {
@@ -234,6 +236,31 @@ void processarRespostaHTTP(const String& respostaJson) {
     }
     if (strlen(mensagem) > 0) Serial.println(mensagem);
   }
+}
+
+// --- ENVIO SERIAL (fallback e captura de teste) ---
+void enviarFotoSerial(camera_fb_t* fb) {
+  Serial.printf("\nINICIO_FOTO|%s|%u\n", CAMINHO_FOTO_NOTEBOOK, (unsigned)fb->len);
+  Serial.write(fb->buf, fb->len);
+  Serial.println("\nFIM_FOTO");
+}
+
+void tirarFotoSerial() {
+  digitalWrite(ledPin, HIGH);
+
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (fb) esp_camera_fb_return(fb);
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("ERRO: Falha ao capturar a imagem.");
+    digitalWrite(ledPin, LOW);
+    return;
+  }
+
+  enviarFotoSerial(fb);
+  esp_camera_fb_return(fb);
+  digitalWrite(ledPin, LOW);
+  Serial.println("FOTO_SERIAL_OK");
 }
 
 void tirarFoto() {
@@ -263,13 +290,8 @@ void tirarFoto() {
   bipErroRede();
   Serial.println("HTTP indisponivel, usando serial USB...");
 
-  // Envia o cabeçalho com o diretório de destino e o tamanho da foto via cabo USB
-  Serial.printf("\nINICIO_FOTO|%s|%u\n", CAMINHO_FOTO_NOTEBOOK, fb->len);
-
-  // Transfere os bytes da imagem JPG diretamente pela porta USB
-  Serial.write(fb->buf, fb->len);
-
-  Serial.println("\nFIM_FOTO");
+  // Envia cabeçalho + bytes da imagem JPG diretamente pela porta USB
+  enviarFotoSerial(fb);
 
   esp_camera_fb_return(fb);
   digitalWrite(ledPin, LOW);
@@ -284,7 +306,9 @@ void setup() {
   digitalWrite(ledPin, LOW);
 
   configurarCamera3MP();
-  Serial.println("Camera 3MP pronta! Pressione o botao no pino 42.");
+
+  Serial.println("Camera pronta! Botao no pino 42 dispara o burst de fotos.");
+  Serial.println("Visualizador via USB: FOTO pede um frame; BOTAO inicia a rajada.");
 }
 
 void loop() {
@@ -293,25 +317,39 @@ void loop() {
     comando.trim();
     
     if (comando == "LIDO") {
-      travaLeitura = true;
-      // Bipe curto e agudo avisando que a câmera capturou o código
+      // Bipe curto e agudo avisando que o código foi decodificado
       digitalWrite(buzzerPin, HIGH);
       delay(50); 
       digitalWrite(buzzerPin, LOW);
     }
     else if (comando == "CADASTRADO") {
-      // Bipe longo avisando que o produto foi salvo no banco de dados
+      // Bipe longo avisando que o produto foi salvo/contado
       digitalWrite(buzzerPin, HIGH);
       delay(400); 
       digitalWrite(buzzerPin, LOW);
     }
+    else if (comando == "ERRO") {
+      // Nenhum código encontrado nas fotos do burst: 2 bipes médios
+      bipMedio();
+      delay(150);
+      bipMedio();
+    }
+    else if (comando == "FOTO") {
+      // O PC pede um frame por vez; a captura em rajada é comandada por ele.
+      tirarFotoSerial();
+    }
   }
 
-  if (digitalRead(btnEntradaPin) == HIGH) {
-    travaLeitura = false; 
-  } 
-  else if (digitalRead(btnEntradaPin) == LOW && !travaLeitura) {
-    tirarFoto();
-    delay(200);
+  // Botão do pino 42 (INPUT_PULLUP, ativo em LOW): apenas avisa o PC.
+  // O visualizador é quem tira as várias fotos e decide quando parar.
+  bool pressionado = (digitalRead(btnEntradaPin) == LOW);
+  if (pressionado && !botaoPressionado) {
+    botaoPressionado = true;
+    if (millis() - ultimoClique >= DEBOUNCE_MS) {
+      ultimoClique = millis();
+      Serial.println("BOTAO");
+    }
+  } else if (!pressionado) {
+    botaoPressionado = false;
   }
 }

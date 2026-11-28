@@ -15,7 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Código da API
 COPY api/ ./api/
-COPY comum.py config.py zbar_compat.py ./
+COPY comum.py config.py zbar_compat.py leitor_groq.py ./
+
+# Garante LF e permissão de execução (checkouts no Windows podem converter para CRLF)
+RUN sed -i 's/\r$//' /app/api/docker-entrypoint.sh && chmod +x /app/api/docker-entrypoint.sh
 
 # Variável para volume persistente
 ENV DATABASE_PATH=/data/despensa.db

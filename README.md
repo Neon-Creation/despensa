@@ -1,21 +1,24 @@
 # Despensa
 
-Aplicação de controle de estoque por código de barras. Uma foto tirada pela
-ESP32-CAM pode ser enviada à API; ela lê o EAN e incrementa a quantidade quando
-o produto já está cadastrado. Produtos novos precisam ser cadastrados pelos
-scripts locais, que também podem identificar itens com fontes web e IA.
+Aplicação de controle de estoque por código de barras. A ESP32-CAM captura fotos
+pela USB e a API lê o EAN, identifica produtos novos em bases públicas e
+incrementa a quantidade.
 
 ## Como funciona
 
-1. A ESP32-CAM captura uma foto ao pressionar o botão.
-2. Ela tenta enviá-la por Wi-Fi para a API como `multipart/form-data`, protegida
-   pelo header `X-API-Key`. Se não conseguir, mantém o envio serial USB como
-   alternativa.
-3. A API lê o código de barras em memória, sem salvar a foto. Se o EAN existir
-   no SQLite, soma 1 ao estoque; se não existir, responde `acao: "erro"` com o
-   EAN lido para que o produto seja cadastrado via `PUT /produto/{codigo}`.
-4. Depois do cadastro, um novo upload do mesmo EAN incrementa a quantidade.
-   A API também oferece consultas do estoque e de um produto por EAN.
+1. No PC, `visualizador.py` (http://localhost:8090) mostra a câmera ao vivo e
+   comanda a placa pela serial USB (921600 baud). O Wi-Fi da placa está desligado.
+2. Um clique no botão verde da página — ou no botão físico do pino 42 — inicia
+   uma **rajada de até 5 fotos**. Todas são salvas em `imagens/fotos/<sessao>/`
+   e decodificadas localmente; a sessão para após 2 leituras iguais.
+3. A melhor foto é enviada uma única vez à API como `multipart/form-data`, com o
+   header `X-API-Key` e um campo `sessao` que evita contagem duplicada.
+4. A API lê o EAN em memória. Se o produto existir, soma 1 ao estoque. Se for
+   novo, consulta Open Food Facts → UPCitemdb → Cosmos (e, opcionalmente, Groq em
+   background); se identificar, cadastra e já conta (`acao: "cadastrado"`).
+5. Se nenhuma fonte identificar o EAN, a API responde `acao: "erro"`, emite
+   `produto-nao-cadastrado` e o dashboard abre o modal com os dados sugeridos
+   para o usuário conferir e cadastrar via `PUT /produto/{codigo}`.
 
 ## Teste rápido da API
 
@@ -74,6 +77,23 @@ O `PUT` é idempotente: em produto novo a quantidade começa em 1; em produto
 já existente os metadados são atualizados sem zerar a contagem, a menos que o
 campo opcional `quantidade` seja enviado.
 
+## Captura pela USB (visualizador)
+
+Com a placa ligada em COM5 e o firmware atual gravado:
+
+```bash
+python visualizador.py COM5 8090
+```
+
+Abra <http://localhost:8090>, aponte a câmera para o código de barras (a ~10–20 cm,
+com boa luz, dentro da caixa verde) e clique em **Bater foto** ou no botão do
+pino 42. Cada sessão salva 5 JPEGs em `imagens/fotos/<sessao>/` e envia a melhor
+foto à API. O status da última sessão aparece na página.
+
+As variáveis `PRODUTO_LOOKUP_ATIVO`, `PRODUTO_LOOKUP_GROQ` e
+`PRODUTO_LOOKUP_TIMEOUT_S` controlam a identificação automática (veja
+`.env.example`). O Groq roda em background e avisa o dashboard por SSE.
+
 ## API
 
 | Método | Rota | Autenticação | Função |
@@ -82,7 +102,10 @@ campo opcional `quantidade` seja enviado.
 | `POST` | `/upload` | `X-API-Key` | Recebe uma imagem e tenta contar o produto |
 | `GET` | `/estoque` | `X-API-Key` | Lista os produtos e o total |
 | `GET` | `/produto/{codigo}` | `X-API-Key` | Consulta um produto pelo EAN |
+| `GET` | `/produto/{codigo}/sugestao` | `X-API-Key` | Sugere nome/marca de um EAN novo (fontes rápidas, sem gravar) |
+| `GET` | `/produto/{codigo}/identificar-ia` | chave do dashboard | Busca com IA sob demanda (Groq); pode demorar segundos |
 | `PUT` | `/produto/{codigo}` | `X-API-Key` | Cadastra ou atualiza um produto pelo EAN |
+| `DELETE` | `/produto/{codigo}` | chave do dashboard | Apaga um produto (ESP32 recebe 403) |
 | `GET` | `/events/estoque` | `X-API-Key` | SSE: eventos de atualização de quantidade |
 
 O upload aceita imagens de até `MAX_UPLOAD_MB` (5 MB por padrão) e tem limite

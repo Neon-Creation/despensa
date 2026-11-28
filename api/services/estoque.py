@@ -6,6 +6,7 @@ from typing import Optional
 from api.schemas import EAN_PATTERN, EstoqueResponse, ProdutoResponse, ProdutoUpsert
 from api.services.database import (
     buscar_produto_por_codigo,
+    excluir_produto as excluir_produto_db,
     listar_todos_produtos,
 )
 from api.services.database import upsert_produto as upsert_produto_db
@@ -53,3 +54,14 @@ def salvar_produto(codigo: str, dados: ProdutoUpsert) -> ProdutoResponse:
         acao="atualizado",
     )
     return salvo
+
+
+def remover_produto(codigo: str) -> bool:
+    """Exclui um produto pelo EAN e publica o evento SSE para o dashboard."""
+    if re.fullmatch(EAN_PATTERN, codigo) is None:
+        raise ValueError(f"Código EAN inválido: {codigo!r}")
+
+    removido = excluir_produto_db(codigo)
+    if removido:
+        eventos.notificar(codigo=codigo, quantidade=0, acao="excluido")
+    return removido

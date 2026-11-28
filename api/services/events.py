@@ -20,6 +20,27 @@ TAMANHO_MAX_FILA = 50
 class BarramentoEventos:
     """Publica eventos para assinantes SSE e limita a 1 conexão por cliente."""
 
+    def _publicar_evento_nomeado(self, nome: str, dados: dict) -> None:
+        """Publica um evento SSE com nome a partir de código síncrono."""
+        if not self._inscritos:
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+
+        evento = {
+            "event": nome,
+            "data": json.dumps(dados, ensure_ascii=False),
+        }
+
+        def agendar() -> None:
+            asyncio.create_task(self._publicar_bruto(evento))
+
+        try:
+            loop.call_soon_threadsafe(agendar)
+        except RuntimeError:
+            pass
+
     def __init__(self) -> None:
         self._inscritos: set[asyncio.Queue[dict]] = set()
         self._conexoes: set[str] = set()
@@ -91,21 +112,22 @@ class BarramentoEventos:
 
     def notificar_produto_nao_cadastrado(self, codigo: str) -> None:
         """Publica evento SSE 'produto-nao-cadastrado' a partir de código síncrono."""
-        if not self._inscritos:
-            return
-        loop = self._loop
-        if loop is None or not loop.is_running():
-            return
+        self._publicar_evento_nomeado("produto-nao-cadastrado", {"codigo": codigo})
 
-        evento = {"event": "produto-nao-cadastrado", "data": json.dumps({"codigo": codigo}, ensure_ascii=False)}
+    def notificar_produto_identificando(self, codigo: str) -> None:
+        """Avisa que a IA começou a identificar o EAN em background."""
+        self._publicar_evento_nomeado("produto-identificando", {"codigo": codigo})
 
-        def agendar() -> None:
-            asyncio.create_task(self._publicar_bruto(evento))
+    def notificar_produto_nao_identificado(self, codigo: str) -> None:
+        """Avisa que a IA terminou sem encontrar o produto."""
+        self._publicar_evento_nomeado("produto-nao-identificado", {"codigo": codigo})
 
-        try:
-            loop.call_soon_threadsafe(agendar)
-        except RuntimeError:
-            pass
+    def notificar_produto_identificado(self, codigo: str, info: dict) -> None:
+        """Avisa que a identificação em background concluiu o cadastro."""
+        self._publicar_evento_nomeado(
+            "produto-identificado",
+            {"codigo": codigo, "origem": info.get("origem"), "nome": info.get("nome")},
+        )
 
     async def _publicar_bruto(self, evento: dict) -> None:
         """Publica evento já formatado para SSE (com campos 'event' e 'data')."""
