@@ -1,5 +1,8 @@
 # Despensa
 
+> **Como rodar tudo junto (API + Dashboard + câmera):** veja o
+> [Guia de execução](../GUIA_DE_EXECUCAO.md) na pasta raiz do projeto.
+
 Aplicação de controle de estoque por código de barras. A ESP32-CAM captura fotos
 pela USB e a API lê o EAN, identifica produtos novos em bases públicas e
 incrementa a quantidade.
