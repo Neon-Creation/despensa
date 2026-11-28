@@ -15,9 +15,28 @@ class UploadResponse(BaseModel):
     lido: bool
     codigo: Optional[str] = None
     produto: Optional[str] = None
-    acao: Optional[str] = None  # "contado" | "erro"
+    acao: Optional[str] = None  # "contado" | "cadastrado" | "erro"
     quantidade: Optional[int] = None
     mensagem: Optional[str] = None
+    origem: Optional[str] = None  # fonte que identificou o produto automaticamente
+
+
+class ExclusaoResponse(BaseModel):
+    """Resultado da exclusão de um produto."""
+
+    codigo: EanCodigo
+    excluido: bool = True
+
+
+class SugestaoResponse(BaseModel):
+    """Dados encontrados automaticamente para um EAN ainda não cadastrado."""
+
+    encontrado: bool
+    nome: Optional[str] = None
+    marca: Optional[str] = None
+    conteudo: Optional[str] = None
+    foto_url: Optional[str] = None
+    origem: Optional[str] = None
 
 
 class ProdutoUpsert(BaseModel):

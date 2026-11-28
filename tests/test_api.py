@@ -146,6 +146,7 @@ def test_sem_codigo_de_barras(client, monkeypatch):
         "acao": None,
         "quantidade": None,
         "mensagem": "Nenhum código de barras encontrado",
+        "origem": None,
     }
 
 

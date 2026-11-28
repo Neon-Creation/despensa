@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 firmware/secrets.h
+# Capturas do visualizador (rajadas e fotos de teste geradas localmente)
+imagens/fotos/
+imagens/foto_teste_*.jpg
 __pycache__/
 *.py[cod]
 *.db

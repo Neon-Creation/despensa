@@ -1,10 +1,35 @@
 """Acesso ao SQLite usado pela API (WAL, health check e contagem de produtos)."""
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Optional
 
 from api.config import settings
+
+_wal_configurado = False
+_wal_trava = threading.Lock()
+
+
+def _garantir_wal(conn: sqlite3.Connection) -> None:
+    """Habilita WAL uma única vez.
+
+    Executar ``PRAGMA journal_mode=WAL`` em toda conexão exige um lock
+    exclusivo momentâneo e pode falhar enquanto outra thread está usando o
+    banco (por exemplo, um upload rodando em worker thread).
+    """
+    global _wal_configurado
+    if _wal_configurado:
+        return
+    with _wal_trava:
+        if _wal_configurado:
+            return
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _wal_configurado = True
+        except sqlite3.OperationalError:
+            # Outra conexão já habilitou o WAL; seguir sem repetir o PRAGMA.
+            pass
 
 
 @contextmanager
@@ -17,7 +42,7 @@ def get_db():
     """
     conn = sqlite3.connect(settings.DATABASE_PATH, timeout=30)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        _garantir_wal(conn)
         conn.execute("PRAGMA busy_timeout=5000")
 
         conn.execute("""
@@ -53,12 +78,54 @@ def health_check_db() -> bool:
         return False
 
 
-def registrar_ou_contar_retorna(codigo: str) -> dict:
-    """Conta um produto existente; para produto novo, retorna erro sem cadastrar.
+def produto_existe(codigo: str) -> bool:
+    """Retorna True se o EAN já estiver no banco."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT 1 FROM produtos WHERE codigo = ?", (codigo,)
+        ).fetchone() is not None
 
-    A API não tem terminal interativo para pedir nome/marca, então produtos
-    novos devem ser cadastrados via ``PUT /produto/{codigo}`` (ou pelos scripts
-    CLI locais).
+
+def inserir_se_novo(
+    codigo: str,
+    nome: str,
+    marca: Optional[str] = None,
+    conteudo: Optional[str] = None,
+    foto_url: Optional[str] = None,
+) -> Optional[dict]:
+    """Insere um produto identificado automaticamente, de forma atômica.
+
+    Retorna ``None`` se outro processo tiver cadastrado o mesmo EAN no intervalo
+    (o ``ON CONFLICT DO NOTHING`` evita duplicidade).
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO produtos (codigo, nome, marca, conteudo, foto_url, quantidade)
+            VALUES (?, ?, ?, ?, ?, 1)
+            ON CONFLICT(codigo) DO NOTHING
+            """,
+            (codigo, nome, marca, conteudo, foto_url),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        cursor.execute(
+            "SELECT nome, quantidade FROM produtos WHERE codigo = ?", (codigo,)
+        )
+        linha = cursor.fetchone()
+        if not linha:
+            return None
+        return {"nome": linha[0], "quantidade": linha[1]}
+
+
+def registrar_ou_contar_retorna(codigo: str, info: Optional[dict] = None) -> dict:
+    """Conta um produto existente.
+
+    Para produto novo, usa ``info`` (dados do lookup automático) para cadastrar
+    e já contar. Sem ``info``, retorna erro para o dashboard abrir o cadastro
+    manual via ``PUT /produto/{codigo}``.
     """
     with get_db() as conn:
         cursor = conn.cursor()
@@ -82,12 +149,28 @@ def registrar_ou_contar_retorna(codigo: str) -> dict:
             nome, quantidade = cursor.fetchone()
             return {"acao": "contado", "produto": nome, "quantidade": quantidade}
 
-        return {
-            "acao": "erro",
-            "produto": None,
-            "quantidade": 0,
-            "mensagem": "Produto não cadastrado. Cadastre via PUT /produto/{codigo}.",
-        }
+    if info and info.get("nome"):
+        salvo = inserir_se_novo(
+            codigo,
+            info["nome"],
+            info.get("marca"),
+            info.get("conteudo"),
+            info.get("foto_url"),
+        )
+        if salvo:
+            return {
+                "acao": "cadastrado",
+                "produto": salvo["nome"],
+                "quantidade": salvo["quantidade"],
+                "origem": info.get("origem"),
+            }
+
+    return {
+        "acao": "erro",
+        "produto": None,
+        "quantidade": 0,
+        "mensagem": "Produto não cadastrado. Cadastre via PUT /produto/{codigo}.",
+    }
 
 
 def upsert_produto(
@@ -180,3 +263,11 @@ def buscar_produto_por_codigo(codigo: str) -> Optional[dict]:
         if row:
             return {"codigo": row[0], "nome": row[1], "marca": row[2], "conteudo": row[3], "quantidade": row[4]}
         return None
+
+
+def excluir_produto(codigo: str) -> bool:
+    """Apaga o produto pelo EAN. Retorna True se uma linha foi removida."""
+    with get_db() as conn:
+        cursor = conn.execute("DELETE FROM produtos WHERE codigo = ?", (codigo,))
+        conn.commit()
+        return cursor.rowcount > 0

@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     MAX_UPLOAD_MB: int = 5
 
+    # Identificação automática de produtos pelo EAN.
+    # As fontes rápidas (Open Food Facts, UPCitemdb, Cosmos) rodam no upload;
+    # o Groq fica em background para não atrasar a resposta.
+    PRODUTO_LOOKUP_ATIVO: bool = True
+    PRODUTO_LOOKUP_GROQ: bool = False
+    PRODUTO_LOOKUP_TIMEOUT_S: float = 6.0
+
     model_config = SettingsConfigDict(
         env_file=str(CAMINHO_ENV),
         env_file_encoding="utf-8",
