@@ -9,10 +9,12 @@ incrementa a quantidade.
 1. No PC, `visualizador.py` (http://localhost:8090) mostra a câmera ao vivo e
    comanda a placa pela serial USB (921600 baud). O Wi-Fi da placa está desligado.
 2. Um clique no botão verde da página — ou no botão físico do pino 42 — inicia
-   uma **rajada de até 5 fotos**. Todas são salvas em `imagens/fotos/<sessao>/`
-   e decodificadas localmente; a sessão para após 2 leituras iguais.
+   uma **rajada de até 5 fotos**. Os quadros são salvos em
+   `imagens/fotos/<sessao>/` e decodificados localmente; a sessão para após
+   duas leituras detectadas ou ao atingir o limite de quadros.
 3. A melhor foto é enviada uma única vez à API como `multipart/form-data`, com o
-   header `X-API-Key` e um campo `sessao` que evita contagem duplicada.
+   header `X-API-Key` e um campo `sessao` que evita recontagens de retries
+   repetidos por até 120 segundos no processo da API.
 4. A API lê o EAN em memória. Se o produto existir, soma 1 ao estoque. Se for
    novo, consulta Open Food Facts → UPCitemdb → Cosmos (e, opcionalmente, Groq em
    background); se identificar, cadastra e já conta (`acao: "cadastrado"`).
@@ -87,8 +89,8 @@ python visualizador.py COM5 8090
 
 Abra <http://localhost:8090>, aponte a câmera para o código de barras (a ~10–20 cm,
 com boa luz, dentro da caixa verde) e clique em **Bater foto** ou no botão do
-pino 42. Cada sessão salva 5 JPEGs em `imagens/fotos/<sessao>/` e envia a melhor
-foto à API. O status da última sessão aparece na página.
+pino 42. Cada sessão salva até 5 JPEGs em `imagens/fotos/<sessao>/` e envia a
+foto selecionada à API. O status da última sessão aparece na página.
 
 As variáveis `PRODUTO_LOOKUP_ATIVO`, `PRODUTO_LOOKUP_GROQ` e
 `PRODUTO_LOOKUP_TIMEOUT_S` controlam a identificação automática (veja
@@ -103,14 +105,19 @@ As variáveis `PRODUTO_LOOKUP_ATIVO`, `PRODUTO_LOOKUP_GROQ` e
 | `GET` | `/estoque` | `X-API-Key` | Lista os produtos e o total |
 | `GET` | `/produto/{codigo}` | `X-API-Key` | Consulta um produto pelo EAN |
 | `GET` | `/produto/{codigo}/sugestao` | `X-API-Key` | Sugere nome/marca de um EAN novo (fontes rápidas, sem gravar) |
-| `GET` | `/produto/{codigo}/identificar-ia` | chave do dashboard | Busca com IA sob demanda (Groq); pode demorar segundos |
+| `GET` | `/produto/{codigo}/identificar-ia` | Chave do dashboard | Busca sob demanda (fontes rápidas e Groq opcional); pode demorar segundos |
 | `PUT` | `/produto/{codigo}` | `X-API-Key` | Cadastra ou atualiza um produto pelo EAN |
-| `DELETE` | `/produto/{codigo}` | chave do dashboard | Apaga um produto (ESP32 recebe 403) |
-| `GET` | `/events/estoque` | `X-API-Key` | SSE: eventos de atualização de quantidade |
+| `DELETE` | `/produto/{codigo}` | Chave do dashboard | Apaga um produto (ESP32 recebe 403) |
+| `GET` | `/events/estoque` | `X-API-Key` ou `token` | SSE: alterações do estoque e estados de identificação |
 
 O upload aceita imagens de até `MAX_UPLOAD_MB` (5 MB por padrão) e tem limite
 de 10 requisições por minuto por IP. As consultas de estoque têm limite de 30
 por minuto. O healthcheck não requer chave.
+
+**Histórico:** a API atual não implementa `GET /leituras`. O dashboard
+[`Neon-Creation/dashboard-despesa`](https://github.com/Neon-Creation/dashboard-despesa)
+espera essa rota para sua tela de histórico, então essa tela não é compatível
+com o backend atual até que o endpoint e seu contrato sejam implementados.
 
 ### Formato do EAN e o campo `total`
 
@@ -149,25 +156,54 @@ pela saída serial.
 
 ## Atualizações em tempo real (SSE)
 
-`GET /events/estoque` mantém uma conexão SSE aberta e envia um evento sempre
-que a quantidade de um produto muda (upload da ESP32 ou cadastro via `PUT`):
+`GET /events/estoque` mantém uma conexão SSE aberta e envia eventos quando o
+estoque muda (upload da ESP32, cadastro/atualização via `PUT` ou exclusão via
+`DELETE`):
 
 ```
 event: estoque-update
 data: {"codigo": "7891079013373", "quantidade": 5, "acao": "incrementado"}
 ```
 
-O campo `acao` é `incrementado` para uploads e `atualizado` para `PUT`. Cada
-cliente pode manter **uma** conexão SSE por vez; uma segunda conexão recebe
-`429`. A vaga é liberada ao desconectar. O envio de keep-alive usa ping de 15 s.
+O campo `acao` de `estoque-update` pode ser `incrementado`, `cadastrado`,
+`atualizado` ou `excluido`. A API também envia `produto-nao-cadastrado`,
+`produto-identificando`, `produto-identificado` e
+`produto-nao-identificado`, usados pelo dashboard para mostrar o estado de
+identificação automática. O stream não é um histórico persistente.
+
+Cada IP pode manter **uma** conexão SSE por vez; uma conexão adicional recebe
+`429`. A vaga é liberada ao desconectar. O keep-alive usa ping de 15 segundos.
+A conexão do navegador recebe o token na query string porque `EventSource` não
+permite headers customizados; use somente a chave de dashboard no dashboard.
+
+## Integração com o dashboard
+
+O dashboard consulta `/health`, `/estoque` e `/produto/{codigo}` e usa
+`/produto/{codigo}/sugestao`, `/produto/{codigo}/identificar-ia`,
+`PUT /produto/{codigo}`, `DELETE /produto/{codigo}` e `/events/estoque`.
+Credenciais e URL ficam no servidor do dashboard; configure
+`DESPENSA_API_KEY` com `API_KEY_DASHBOARD` quando as chaves específicas
+estiverem habilitadas na API.
+
+O dashboard não chama `POST /upload` nem controla a placa. O visualizador/ESP32
+usa a chave `API_KEY_ESP32` para captura e upload. `identificar-ia` e `DELETE`
+são exclusivos do cliente dashboard; `PUT` cadastra ou atualiza um produto
+usando uma chave válida. A chave legada `API_KEY` é classificada como ESP32,
+portanto não autoriza as operações exclusivas do dashboard. Para detalhes e
+limitações sincronizadas, consulte
+[`docs/ESP32_CONTEXT.md`](https://github.com/Neon-Creation/dashboard-despesa/blob/main/docs/ESP32_CONTEXT.md)
+e [`docs/PRODUCT_BRIEF.md`](https://github.com/Neon-Creation/dashboard-despesa/blob/main/docs/PRODUCT_BRIEF.md)
+no repositório dashboard.
 
 ```bash
 curl -N -H "X-API-Key: $DASHBOARD_KEY" http://localhost:8000/events/estoque
 ```
 
-O consumo no dashboard (React Query + fallback para polling) é uma tarefa
-separada. Nos testes, `tests/test_sse.py` sobe um servidor real porque o
-`TestClient` do Starlette não suporta respostas SSE de duração indefinida.
+O dashboard consome esses eventos via `EventSource` e invalida as consultas de
+produtos e leituras em cache. A rota de histórico `/leituras` ainda não existe
+nesta API; veja a nota de incompatibilidade acima. Nos testes, `tests/test_sse.py`
+sobe um servidor real porque o `TestClient` do Starlette não suporta respostas
+SSE de duração indefinida.
 
 ## Simulação da ESP32 (sem hardware)
 
